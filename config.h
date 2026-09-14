@@ -9,28 +9,28 @@
 // ============================================================
 //  Назначение пинов
 // ============================================================
-#define PIN_DS18B20   PB0       // 1-Wire шина данных
-#define PIN_BUTTON    PA15      // Кнопка активности: внешний pull-up, активный LOW
-#define PIN_RESET     PC11      // Кнопка сброса диапазона: внешний pull-up, активный LOW
+constexpr int PIN_DS18B20 = PB0;      // 1-Wire шина данных
+constexpr int PIN_BUTTON  = PA15;     // Кнопка активности: внешний pull-up, активный LOW
+constexpr int PIN_RESET   = PC11;     // Кнопка сброса диапазона: внешний pull-up, активный LOW
 
 // Пины I2C для OLED (Black Pill F401)
-#define I2C_SDA       PB7
-#define I2C_SCL       PB6
+constexpr int I2C_SDA = PB7;
+constexpr int I2C_SCL = PB6;
 
 // Индикаторный светодиод. На плате термометра светодиод подключён
 // катодом к GND, анодом через резистор к пину MCU — поэтому он
 // горит при ВЫСОКОМ уровне (HIGH) на пине.
-#define LED_PIN       PC13
-#define LED_ON        HIGH
-#define LED_OFF       LOW
+constexpr int LED_PIN = PC13;
+constexpr int LED_ON  = HIGH;
+constexpr int LED_OFF = LOW;
 
 // ============================================================
 //  Параметры дисплея
 // ============================================================
-#define OLED_W        128       // Ширина дисплея в пикселях
-#define OLED_H        64        // Высота дисплея в пикселях
-#define OLED_ADDR     0x3C      // I2C адрес дисплея SSD1306
-#define OLED_RESET    -1        // -1 = совместно с линией RESET MCU
+constexpr int OLED_W     = 128;       // Ширина дисплея в пикселях
+constexpr int OLED_H     = 64;        // Высота дисплея в пикселях
+constexpr int OLED_ADDR  = 0x3C;      // I2C адрес дисплея SSD1306
+constexpr int OLED_RESET = -1;        // -1 = совместно с линией RESET MCU
 
 // ============================================================
 //  Временные константы
@@ -88,7 +88,7 @@ constexpr uint32_t SLEEP_PERIOD_MS    = 15000UL;   // 15 с между заме�
 //     в «полке» 3.8-4.9 мА по замерам без USB-кабеля).
 // 0 = лог через USB-CDC, как раньше (отладка за ПК; поведение прежнее).
 #define LOG_VIA_USART1 1
-#define NO_LOG
+// #define NO_LOG  // ЗАКОММЕНТИРОВАНО: выберите ОДИН режим логирования
 
 // Антидребезг кнопки: сколько мс ждать стабилизации уровня
 constexpr uint16_t BUTTON_DEBOUNCE_MS = 50;
