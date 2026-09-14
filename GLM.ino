@@ -1,5 +1,6 @@
 /* ============================================================
  *  Логгер температуры — STM32F401 + SSD1306 + DS18B20
+ *  Основной файл (GLM.ino)
  * ============================================================
  *
  * Аппаратная часть
@@ -69,102 +70,22 @@
 #include <STM32RTC.h>
 #include <STM32LowPower.h>
 #include <math.h>
+#include "config.h"
 
 // ============================================================
-//  Назначение пинов
+//  Объекты библиотек
 // ============================================================
-#define PIN_DS18B20   PB0       // 1-Wire шина данных
-#define PIN_BUTTON    PA15      // Кнопка активности: внешний pull-up, активный LOW
-#define PIN_RESET     PC11      // Кнопка сброса диапазона: внешний pull-up, активный LOW
-
-// Пины I2C для OLED (Black Pill F401)
-#define I2C_SDA       PB7
-#define I2C_SCL       PB6
-
-// Индикаторный светодиод. На плате термометра светодиод подключён
-// катодом к GND, анодом через резистор к пину MCU — поэтому он
-// горит при ВЫСОКОМ уровне (HIGH) на пине.
-#define LED_PIN       PC13
-#define LED_ON        HIGH
-#define LED_OFF       LOW
+Adafruit_SSD1306 display(OLED_W, OLED_H, &Wire, OLED_RESET);
+OneWire           oneWire(PIN_DS18B20);
+DallasTemperature sensors(&oneWire);
 
 // ============================================================
-//  Параметры дисплея
+//  Температурные данные
 // ============================================================
-#define OLED_W        128
-#define OLED_H        64
-#define OLED_ADDR     0x3C
-#define OLED_RESET    -1        // -1 = совместно с линией RESET MCU
-
-// ============================================================
-//  Временные константы
-// ============================================================
-static const uint32_t ACTIVE_DURATION_MS = 60000UL;   // 1 минута активного режима
-static const uint32_t ACTIVE_REFRESH_MS  = 5000UL;    // обновление экрана каждые 5 с
-static const uint32_t SLEEP_PERIOD_MS    = 15000UL;   // 15 с между замерами в SLEEP
-
-// Флаг отладочного режима: если true — НЕ засыпать, а каждую секунду
-// печатать время RTC в терминал. Так можно убедиться, что RTC живёт.
-// После проверки переключите в false.
-static const bool DEBUG_RTC = false;
-
-// ============================================================
-//  Выбор режима сна.
-//  0 — Sleep-режим через LowPower.sleep().
-//      Стабильный, но ток ~5-10 мА.
-//  1 — STOP-режим через LowPower.deepSleep()
-//      с полной оптимизацией по AN4899 и
-//      образцу sketch_apr8a.ino. Ток ~50-200 мкА,
-//      но требует реинициализации периферии
-//      после пробуждения.
-//
-//  ВАЖНО: при USE_STOP_MODE = 1 USB-CDC неработоспособен после
-//  пробуждения. Логирование переключается на USART1 (PA9=TX, PA10=RX),
-//  если LOG_VIA_USART1 = 1. Подключите USB-TTL конвертер.
-//
-//  ФИКС F1: USE_STOP_MODE и LOG_VIA_USART1 — теперь МАКРОСЫ, а не
-//  C++-переменные. Препроцессор '#if' не видит C++-идентификаторов:
-//  любая неизвестная ему лексема подставляется как 0, поэтому запись
-//      #if USE_STOP_MODE && LOG_VIA_USART1
-//  при 'static const bool' всегда вычислялась как '#if 0 && 0':
-//  ветка USART1 не компилировалась НИКОГДА, лог намертво уходил
-//  в USB-CDC, а блок '#if !(USE_STOP_MODE && LOG_VIA_USART1)'
-//  (ожидание энумерации USB в setup) оставался включённым.
-//  Как макросы значения видны и препроцессору, и обычному коду:
-//  runtime-проверки вида 'if (USE_STOP_MODE) {...}' работают как
-//  прежде (компилятор сворачивает их в константу).
-// ============================================================
-#define USE_STOP_MODE 1
-
-// === ТЕСТОВЫЙ РЕЖИМ: полное отключение логирования ===
-// Цель: проверить, что USB-CDC инициализация (Serial.begin) активирует
-// OTG_FS_WKUP interrupt (IRQ 31), который будит MCU из STOP.
-// Без лога USB peripheral не инициализируется → STOP должен работать.
-// После теста: закомментировать #define NO_LOG и раскомментировать LOG_BEGIN.
-// #define NO_LOG
-
-// 1 = при USE_STOP_MODE=1 весь лог идёт через аппаратный USART1 (Serial1)
-//     вместо USB-CDC. Подключите USB-TTL конвертер: PA9->RX, PA10->TX (3V3).
-//     Это «батарейный» режим: USB-периферия НЕ инициализируется вообще —
-//     нет задержек на энумерацию (3 с в setup, ~550 мс после каждого
-//     пробуждения) и не остаётся активной в STOP (главный подозреваемый
-//     в «полке» 3.8-4.9 мА по замерам без USB-кабеля).
-// 0 = лог через USB-CDC, как раньше (отладка за ПК; поведение прежнее).
-#define LOG_VIA_USART1 1
-#define NO_LOG
-
-// Антидребезг кнопки: сколько мс ждать стабилизации уровня
-static const uint16_t BUTTON_DEBOUNCE_MS = 50;
-// Таймаут ожидания отпускания кнопки (защита от зависания,
-// если пробуждение было ложным). После этого считаем, что кнопка не нажата.
-static const uint16_t BUTTON_PRESS_TIMEOUT_MS = 3000;
-// Время преобразования DS18B20 при 12-бит: ~750 мс
-static const uint16_t DS18B20_CONV_MS = 750;
-// ФАЗА 2 (энергопотребление вспышки SLEEP-цикла):
-static const uint16_t LED_BLINK_MS  = 50;   // длительность видимого LED-блика «замер идёт»
-static const uint16_t CONV_GUARD_MS = 100;  // запас к 750 мс: дрейф LSI (±1-3%) + субсекундная
-                                            // сетка RTC-будильника; чтение ПОЗЖЕ конца
-                                            // конверсии всегда безопасно (скретчпад готов)
+float currentTempC = 0.0f;
+float minTempC     = 0.0f;
+float maxTempC     = 0.0f;
+bool  hasData      = false;
 
 // ============================================================
 //  Состояния конечного автомата
@@ -217,21 +138,6 @@ void buttonWakeCallback() {
 void rtcWakeCallback(void * /*data*/) {
   wokenByRTC = true;
 }
-
-// ============================================================
-//  Температурные данные
-// ============================================================
-float currentTempC = 0.0f;
-float minTempC     = 0.0f;
-float maxTempC     = 0.0f;
-bool  hasData      = false;
-
-// ============================================================
-//  Объекты библиотек
-// ============================================================
-Adafruit_SSD1306 display(OLED_W, OLED_H, &Wire, OLED_RESET);
-OneWire           oneWire(PIN_DS18B20);
-DallasTemperature sensors(&oneWire);
 
 // ============================================================
 //  Логирование с учётом режима сна.
@@ -304,236 +210,14 @@ static inline void safeSerialFlush(uint32_t timeout_ms = 50) {
   }
 }
 
-// ============================================================
-//  ФАЗА 2.1: полная остановка порта логирования ПЕРЕД каждым
-//  входом в STOP (и основным 15-секундным, и конверсионным 0.8-с).
-//  Вызывается ТОЛЬКО перед LowPower.deepSleep(); после каждого
-//  пробуждения UART поднимается заново (wakeFromStop / конверсионный
-//  блок через LOG_BEGIN). Решает две задачи:
-//
-//  1) ПОТЕРЯ СТРОК ЛОГА. safeSerialFlush() перед сном вызывался
-//     только в Sleep-режиме (USE_STOP_MODE=0). В STOP хвост TX-буфера
-//     замерзал вместе с UART: хвост строки «sleep zZz...» терялся,
-//     соседние строки склеивались в одну («sleep zZz...[Thermo] woke
-//     from STOP»), а в промежуточных билдах пропадали и строки замеров.
-//     Теперь flush выполняется перед КАЖДЫМ засыпанием.
-//
-//  2) УТЕЧКА В ОБЕСТОЧЕННЫЙ МОСТ. Пока USART1 инициализирован, PA9
-//     (TX) держит HIGH всю длину сна. Если USB-TTL мост подключён к
-//     плате проводами, а его USB-кабель выдернут, PA9 через входной
-//     защитный диод моста обратнозапитывает обесточенный CH340
-//     (~0.5-1 мА из батареи на всю длину сна). Важно: по исходникам
-//     ядра (uart.c: uart_deinit) Serial1.end() сбрасывает только сам
-//     USART через RCC и НЕ трогает GPIO — пин остался бы в AF-режиме
-//     с «замороженным» выходом. Поэтому ЯВНО переводим PA9/PA10 в
-//     INPUT_ANALOG (Hi-Z, без подтяжек): нет ни утечки в мост, ни
-//     осцилляции входного буфера на floating-пине (рекомендация
-//     AN4899 — неиспользуемые пины в Analog).
-//
-//  Симметричность: вызов и на пути загрузки (первый сон), и на пути
-//  цикла — GPIO-состояния ВСЕХ снов идентичны, что упрощает разбор
-//  замеров тока (ступеньки «первый сон / повторные сны»).
-// ============================================================
-static void serialOffForStop() {
-  safeSerialFlush(200);          // вытолкнуть последние строки в провод
-#if !defined(NO_LOG) && USE_STOP_MODE && LOG_VIA_USART1
-  Serial1.end();                 // USART1: сброс RCC + стоп тактирования
-  pinMode(PA9,  INPUT_ANALOG);   // PA9/PA10 -> Analog (Hi-Z)
-  pinMode(PA10, INPUT_ANALOG);
-#endif
-}
-
-// ============================================================
-//  Снижение энергопотребления: настройка неиспользуемых пинов
-//  и отключение неиспользуемой периферии.
-//
-//  Согласно ST Application Note AN4899 (GPIO software guidelines
-//  for power optimization), неиспользуемые пины следует настраивать
-//  в режим Analog Input. Это:
-//    1) отключает входной буфер Шмитта (он осциллирует на floating
-//       пине и потребляет 50-500 мкА на пин);
-//    2) отключает pull-up/pull-down резисторы (~50-100 мкА на пин);
-//    3) отключает выходной драйвер.
-//
-//  Также важно полностью отключить АЦП (даже когда он "не используется",
-//  его внутренний регулятор остаётся активным и потребляет 50-200 мкА).
-//  И выключить тактирование неиспользуемой периферии: в Sleep-режиме
-//  тактирование не останавливается автоматически, поэтому SPI/USART/TIM
-//  продолжают потреблять, если их явно не выключить.
-//
-//  Список "занятых" пинов на нашей плате F401RBT6 (LQFP64):
-//    PA11, PA12 — USB DM/DP   (трогать нельзя — теряем USB-CDC;
-//                 исключение: при NO_LOG — в Analog, ветка 1 ниже)
-//    PA13, PA14 — SWDIO/SWCLK (трогать нельзя — теряем отладку/прошивку)
-//    PA15       — кнопка активности
-//    PB0        — DS18B20 (1-Wire)
-//    PB6, PB7   — I2C для OLED
-//    PC11       — кнопка сброса
-//    PC13       — индикаторный светодиод
-//    PC14, PC15 — LSE-кварц (если есть; на BlackPill F401 обычно нет)
-//    PD2        — на LQFP64 единственный выведенный пин порта D.
-//                 Если не используется в схеме — переводим в Analog.
-//    PH0, PH1   — HSE-кварц (трогать нельзя — теряем тактирование)
-// ============================================================
-
-#include "stm32f4xx_hal.h"
-#include "stm32f4xx_hal_gpio.h"
-
-void disableUnusedPinsAndPeripherals() {
-  // --- 1. Неиспользуемые пины порт A: в режим Analog ---
-  // PA13/PA14 (SWD), PA15 (кнопка) — не трогаем всегда.
-  // Раскладка остальных — по веткам ниже: PA11/PA12 (USB DM/DP) в Analog
-  // только когда USB мёртв (NO_LOG); PA9/PA10 — в Analog, кроме USART1-режима.
-  // ФИКС F1: при LOG_VIA_USART1=1 пины PA9/PA10 заняты аппаратным
-  // USART1 (порт логирования) — переводить их в Analog НЕЛЬЗЯ:
-  // эта функция вызывается в setup() ПОСЛЕ LOG_BEGIN и молча
-  // переключила бы UART-пины в Analog (симптом: лог печатается до
-  // строки «[Thermo] entering SLEEP mode» и замолкает навсегда).
-  GPIO_InitTypeDef GPIO_InitStruct;
-  GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  GPIO_InitStruct.Alternate = 0;
-  // ============================================================
-  // ПРАВКА 5.3 (v2, объединённая цепочка): порт A паркуется ОДНИМ
-  // вызовом HAL_GPIO_Init, раскладка пинов — по трём веткам.
-  //
-  // Порядок веток зеркалит приоритеты выбора LOG_OBJECT выше
-  // (там NO_LOG тоже первый): сначала NO_LOG, затем USART1, и
-  // только потом живой USB-CDC. Ставить первой ветку
-  // «!defined(NO_LOG) && USE_STOP_MODE && LOG_VIA_USART1» с
-  // PA11/PA12 в #else НЕЛЬЗЯ: этот #else накрывает и режим USB-CDC,
-  // где PA11/PA12 заняты OTG FS, а Serial.begin() уже отработал в
-  // setup() (наш вызов идёт ПОСЛЕ него). GPIO_MODE_ANALOG уводит пин
-  // из альтернативной функции AF10 — для хоста это выглядит как
-  // физическое выдёргивание кабеля: лог через USB-CDC замолкает.
-  // ============================================================
-#if defined(NO_LOG)
-  // NO_LOG: USB не инициализируется вовсе (LOG_BEGIN — no-op,
-  // Serial.begin() не вызывается, USB-ветка в wakeFromStop()
-  // исключена препроцессором). Свободен весь порт A, кроме
-  // PA13/PA14 (SWD) и PA15 (кнопка) — паркуем PA0-PA12.
-  // Плавающие D+/D- иначе держат входные буферы Шмитта в осцилляции
-  // (AN4899): десятки-сотни мкА, кандидат в «полке» тока сна 0.77 мА.
-  // Достаточно ОДНОЙ настройки здесь: prepareStopMode() GPIO не
-  // трогает, USB-стек не запускается — переопределять пины некому.
-  GPIO_InitStruct.Pin = GPIO_PIN_0  | GPIO_PIN_1  | GPIO_PIN_2  | GPIO_PIN_3  |
-                        GPIO_PIN_4  | GPIO_PIN_5  | GPIO_PIN_6  | GPIO_PIN_7  |
-                        GPIO_PIN_8  | GPIO_PIN_9  | GPIO_PIN_10 |
-                        GPIO_PIN_11 | GPIO_PIN_12;
-#elif USE_STOP_MODE && LOG_VIA_USART1
-  // «Батарейный» USART1-режим (без NO_LOG): PA9/PA10 обслуживают
-  // USART1 — не трогаем (ФИКС F1 выше). PA11/PA12 здесь тоже мертвы
-  // и висят в воздухе; при желании добавить GPIO_PIN_11 | GPIO_PIN_12
-  // и в эту ветку (USB периферия в этом режиме не инициализируется).
-  GPIO_InitStruct.Pin = GPIO_PIN_0  | GPIO_PIN_1  | GPIO_PIN_2  | GPIO_PIN_3  |
-                        GPIO_PIN_4  | GPIO_PIN_5  | GPIO_PIN_6  | GPIO_PIN_7  |
-                        GPIO_PIN_8;
-#else
-  // USB-CDC режим: лог через Serial, устройство уже перечислено.
-  // PA11/PA12 (DM/DP, AF10 OTG FS) — НЕ ТРОГАЕМ. PA9/PA10 свободны
-  // (USART1 не используется) — в Analog.
-  GPIO_InitStruct.Pin = GPIO_PIN_0  | GPIO_PIN_1  | GPIO_PIN_2  | GPIO_PIN_3  |
-                        GPIO_PIN_4  | GPIO_PIN_5  | GPIO_PIN_6  | GPIO_PIN_7  |
-                        GPIO_PIN_8  | GPIO_PIN_9  | GPIO_PIN_10;
-#endif
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-  // --- 2. Неиспользуемые пины порт B: PB1-PB5, PB8-PB15 ---
-  // PB0 (1-Wire), PB6/PB7 (I2C) — не трогаем.
-  GPIO_InitStruct.Pin = GPIO_PIN_1  | GPIO_PIN_2  | GPIO_PIN_3  | GPIO_PIN_4  |
-                        GPIO_PIN_5  | GPIO_PIN_8  | GPIO_PIN_9  | GPIO_PIN_10 |
-                        GPIO_PIN_11 | GPIO_PIN_12 | GPIO_PIN_13 | GPIO_PIN_14 |
-                        GPIO_PIN_15;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-  // --- 3. Неиспользуемые пины порт C: PC0-PC10, PC12, PC14, PC15 ---
-  // PC11 (кнопка сброса), PC13 (LED) — не трогаем.
-  // PC14/PC15 (LSE) — если кварц не распаян, переводим в Analog.
-  // Если кварц есть — закомментируйте PC14/PC15 ниже!
-  GPIO_InitStruct.Pin = GPIO_PIN_0  | GPIO_PIN_1  | GPIO_PIN_2  | GPIO_PIN_3  |
-                        GPIO_PIN_4  | GPIO_PIN_5  | GPIO_PIN_6  | GPIO_PIN_7  |
-                        GPIO_PIN_8  | GPIO_PIN_9  | GPIO_PIN_10 | GPIO_PIN_12 |
-                        GPIO_PIN_14 | GPIO_PIN_15;
-  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
-
-  // --- 3b. Порт D: на F401RBT6 выведен только PD2 (LQFP64) ---
-  // Если PD2 не используется в схеме — переводим в Analog.
-  // ВНИМАНИЕ: если используете PD2 в своём проекте — закомментируйте!
-  GPIO_InitStruct.Pin = GPIO_PIN_2;
-  HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
-
-  // --- 4. Полное отключение АЦП ---
-  // По умолчанию в STM32duino АЦП инициализирован (для analogRead).
-  // Даже когда ADC не используется в скетче, его регулятор остаётся
-  // активным. Отключаем тактирование АЦП напрямую.
-  __HAL_RCC_ADC1_CLK_DISABLE();
-  // Дополнительно: выключаем внутренний датчик температуры и VREFINT.
-  // Это важный источник потребления (~50 мкА), который включён по умолчанию.
-  ADC->CCR &= ~(ADC_CCR_TSVREFE | ADC_CCR_VBATE);
-
-  // --- 5. Отключение тактирования неиспользуемой периферии ---
-  // В Sleep-режиме тактирование не останавливается автоматически.
-  // Перечислено только то, что есть на F401RBT6 и не используется в скетче.
-  // USART2 — может использоваться STM32duino для Serial2. Если не нужен —
-  // отключаем. USART1 оставляем (для Serial).
-  __HAL_RCC_USART2_CLK_DISABLE();
-  // SPI1/2/3 — на F401RBT6 доступны SPI1 и SPI2. SPI3 отсутствует на F401.
-  __HAL_RCC_SPI1_CLK_DISABLE();
-  __HAL_RCC_SPI2_CLK_DISABLE();
-  // I2C2 — не используется. I2C1 нужен для OLED. I2C3 отсутствует на F401.
-  __HAL_RCC_I2C2_CLK_DISABLE();
-  // TIM2-TIM5 — доступны на F401RBT6. TIM6/TIM7/TIM12-14 отсутствуют!
-  // TIM1 оставляем (его может использовать HAL для delay()/micros()).
-  __HAL_RCC_TIM2_CLK_DISABLE();
-  __HAL_RCC_TIM3_CLK_DISABLE();
-  __HAL_RCC_TIM4_CLK_DISABLE();
-  __HAL_RCC_TIM5_CLK_DISABLE();
-  // CAN1 — отсутствует на F401 (есть на F407/F429).
-  // SDIO — отсутствует на F401.
-
-  LOG_OBJECT.println(F("[Thermo] unused pins & peripherals disabled"));
-}
-
-// ============================================================
-//  Инициализация I2C и OLED
-//  ВАЖНО: на STM32F401 необходимо явно назначать SDA/SCL
-//         через Wire.setSDA()/Wire.setSCL() ДО Wire.begin(),
-//         иначе I2C-периферия остаётся на пинах по умолчанию
-//         и экран молчит.
-// ============================================================
-bool initOLED() {
-  Wire.setSDA(I2C_SDA);
-  Wire.setSCL(I2C_SCL);
-  Wire.begin();
-  Wire.setClock(100000);        // 100 кГц — стабильно для SSD1306
-  delay(50);                    // пауза для стабилизации шины
-
-  if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
-    LOG_OBJECT.println(F("[Thermo] OLED init FAILED"));
-    return false;
-  }
-  display.clearDisplay();
-  display.display();
-  return true;
-}
-
-// ============================================================
-//  Примечание о снижении тактовой частоты.
-//  Изначально планировалось переключать SYSCLK с 84 МГц (HSE+PLL) на
-//  4 МГц (HSI/4) для экономии энергии в SLEEP. На практике в Arduino-среде
-//  это ломает USB-CDC (теряет синхронизацию), I2C и 1-Wire тайминги,
-//  а также может ломать EXTI-конфигурацию кнопки. Поэтому от смены частоты
-//  решено отказаться — оставляем стабильные 84 МГц в обоих режимах.
-//  Если в будущем понадобится экономия энергии, лучше перейти на
-//  полноценный STOP-режим с ручной настройкой RTC Wakeup Timer.
-// ============================================================
+// Сырые коды последнего замера напряжения; пишутся при каждом вызове.
+uint16_t g_vddRaw = 0, g_vddCal = 0;
 
 // ============================================================
 //  Вспомогательное: корректное определение нажатия кнопки
 //  с антидребезгом и таймаутом.
 //  Возвращает true, если кнопка действительно нажата.
-// =============================================================
+// ============================================================
 bool isButtonPressed() {
   if (digitalRead(PIN_BUTTON) != LOW) return false;  // активный LOW
   delay(BUTTON_DEBOUNCE_MS);
@@ -582,270 +266,6 @@ void waitForButtonRelease() {
   noInterrupts();
   wokenByButton = false;
   interrupts();
-}
-
-// ============================================================
-//  Сброс диапазона температур
-// ============================================================
-void resetStats() {
-  minTempC = currentTempC;
-  maxTempC = currentTempC;
-  LOG_OBJECT.println(F("[Thermo] stats RESET by user"));
-}
-
-// ============================================================
-//  Вспомогательное: чтение температуры с DS18B20
-// ============================================================
-bool readTemperature(float &out) {
-  sensors.requestTemperatures();
-  // Блокирующее ожидание преобразования. 12-бит ≈ 750 мс.
-  // Это приемлемо: 0.75 с из каждых 15 с (≈5 %) в режиме сна.
-  delay(DS18B20_CONV_MS);
-
-  float t = sensors.getTempCByIndex(0);
-  if (t == DEVICE_DISCONNECTED_C || t <= -55.0f || t >= 125.0f) {
-    return false;            // ошибка датчика / обрыв / КЗ
-  }
-  out = t;
-  return true;
-}
-
-// ============================================================
-//  Вспомогательное: обновление минимума/максимума
-// ============================================================
-void updateStats(float t) {
-  if (!hasData) {
-    minTempC = maxTempC = t;
-    hasData  = true;
-  } else {
-    if (t < minTempC) minTempC = t;
-    if (t > maxTempC) maxTempC = t;
-  }
-}
-
-// ============================================================
-//  ФАЗА 2: замер и лог SLEEP-цикла. Вызывается ПОСЛЕ завершённой
-//  конверсии DS18B20. Выделено из loop(), т.к. конверсия теперь
-//  высиживается двумя способами: deepSleep (STOP-режим) или delay.
-// ============================================================
-void readAndLogSleepTemp() {
-  float t = sensors.getTempCByIndex(0);
-  if (t != DEVICE_DISCONNECTED_C && t > -55.0f && t < 125.0f) {
-    currentTempC = t;
-    updateStats(t);
-    LOG_OBJECT.print(F("[Thermo] wake: TIMER  T="));
-    LOG_OBJECT.print(currentTempC, 2);
-    LOG_OBJECT.print(F("  range=["));
-    LOG_OBJECT.print(minTempC, 2);
-    LOG_OBJECT.print(F(" .. "));
-    LOG_OBJECT.print(maxTempC, 2);
-    LOG_OBJECT.println(F("]"));
-    safeSerialFlush(100);
-  } else {
-    LOG_OBJECT.println(F("[Thermo] wake: TIMER  DS18B20 error"));
-  }
-}
-
-// ============================================================
-//  Управление питанием OLED (SSD1306)
-//  ВАЖНО: display.begin() вызывается ОДИН РАЗ в setup().
-//  После глубокого сна повторно его вызывать нельзя —
-//  Adafruit_SSD1306 это не поддерживает.
-//
-//  Согласно datasheet SSD1306, для МАКСИМАЛЬНОЙ экономии энергии
-//  недостаточно одной команды 0xAE (DISPLAYOFF). Нужно дополнительно
-//  выключить внутренний charge pump (DC-DC converter). Иначе ток
-//  потребления остаётся ~50-100 мкА вместо возможных <10 мкА.
-//
-//  Порядок засыпания:
-//    1) DISPLAYOFF  (0xAE) — гасит панель, останавливает oscillator и drivers
-//    2) CHARGEPUMP  (0x8D) + 0x10 — выключает DC-DC charge pump
-//
-//  Порядок пробуждения (обратный):
-//    1) CHARGEPUMP  (0x8D) + 0x14 — включает charge pump обратно
-//    2) DISPLAYON   (0xAF) — включает панель
-//    3) Небольшая задержка (~100 мс) для раскрутки charge pump.
-//
-//  Источники:
-//    - SSD1306 datasheet, sec. 9 Command Table (Set DC-DC 0x8D)
-//    - Adafruit forum: 0uA sleep achieved by combining 0xAE + charge pump off
-//    - lexus2k/ssd1306 issue #103: sleep mode draws <10uA only with charge pump off
-// ============================================================
-
-// Команды SSD1306 (не все определены в Adafruit_SSD1306.h)
-#define SSD1306_CHARGEPUMP       0x8D
-#define SSD1306_CHARGEPUMP_ON    0x14
-#define SSD1306_CHARGEPUMP_OFF   0x10
-
-void oledPowerOff() {
-  // Полное засыпание OLED: панель OFF + charge pump OFF.
-  display.ssd1306_command(SSD1306_DISPLAYOFF);    // 0xAE
-  display.ssd1306_command(SSD1306_CHARGEPUMP);    // 0x8D
-  display.ssd1306_command(SSD1306_CHARGEPUMP_OFF);// 0x10
-}
-
-void oledPowerOn() {
-  // Пробуждение OLED: charge pump ON + панель ON.
-  display.ssd1306_command(SSD1306_CHARGEPUMP);     // 0x8D
-  display.ssd1306_command(SSD1306_CHARGEPUMP_ON);  // 0x14
-  display.ssd1306_command(SSD1306_DISPLAYON);      // 0xAF
-  // Раскрутка charge pump: по даташиту 100 мс достаточно,
-  // по факту на дешёвых модулях бывает до 200 мс.
-  delay(100);
-}
-
-// ============================================================
-//  ИЗМЕРЕНИЕ НАПРЯЖЕНИЯ ПИТАНИЯ (VDD = батарея) через VREFINT
-// ============================================================
-//  Напрямую измерить шину нельзя: VREF+ соединён с VDDA, а VDDA —
-//  это сама батарея (4.0–4.2 В напрямую на шину). Классический приём
-//  (RM0368 §15.3.6): измеряем внутренний источник опоры VREFINT
-//  (~1.21 В) и сравниваем с заводской калибровкой из системной памяти:
-//
-//      VDDA = 3.0 В * VREFINT_CAL / ADC(VREFINT)
-//
-//  VREFINT_CAL — 12-битный код, откалиброванный при VDDA = 3.0 В,
-//  лежит по адресу 0x1FFF7A2A (DS9716 «Calibration data»). Каналы
-//  ADC F401: IN16 = датчик T, IN17 = VREFINT, IN18 = VBAT.
-//
-//  ВНИМАНИЕ к точности: спецификация VREFINT дана при VDDA 2.4–3.6 В,
-//  а у нас 4.0–4.2 В (вся плата вне abs max — осознанное решение).
-//  Показание годится как индикатор батареи, не как вольтметр.
-//
-//  Энергогигиена (аудит периферии, Task 7): функция самодостаточна —
-//  поднимает клок ADC1 + TSVREFE на время замера (~100 мкс) и ГАСИТ их
-//  в конце, восстанавливая ровно то состояние, которое задаёт
-//  disableUnusedPinsAndPeripherals() (секция 4). Вызывается
-//  только из drawScreen() в активной фазе — в STOP АЦП обесточен.
-// ============================================================
-#define VREFINT_CAL_ADDR_F401 ((const uint16_t*)0x1FFF7A2A) // калибровка при 3.0 В
-#define VDDA_CAL_MV           3300.0f
-
-//  ВНИМАНИЕ (проверено по вендоренной CMSIS ядра STM32duino, stm32f401xe.h):
-//  у поля ADCPRE в CMSIS F4 есть только позиционные биты _0/_1 — DIV-алиасов
-//  (DIV2/DIV4/DIV6/DIV8) нет НИ В ОДНОМ F4-заголовке (нет и у F407);
-//  делители существуют лишь в HAL под именем ADC_CLOCK_SYNC_PCLK_DIVx
-//  (именно его ядро ставит по умолчанию в analog.cpp). По RM0368 §11.12.9
-//  код 01 = PCLK2/4, т.е. ADCPRE_DIV4 == ADCPRE_0 (0x00010000 = 21 МГц).
-#ifndef ADC_CCR_ADCPRE_DIV4
-#define ADC_CCR_ADCPRE_DIV4   ADC_CCR_ADCPRE_0   // PCLK2/4 = 84/4 = 21 МГц
-#endif
-
-//  Диагностика Task 8-b: 1 = вместо напряжения печатать сырые коды
-//  "raw/cal" в том же слоте экрана (расшифровка — в комментарии там же).
-//  Разделяет: нет заводской калибровки (маркер клона, Task 5) vs
-//  сам VREFINT низкий при VDDA 4.0-4.2 В (вне spec).
-#define VDD_DEBUG 0
-
-//  Сырые коды последнего замера; пишутся при каждом вызове.
-uint16_t g_vddRaw = 0, g_vddCal = 0;
-
-uint16_t readVddMillivolts() {
-  // 1. Клок ADC1 (APB2), прескалер и VREFINT — в общем регистре CCR.
-  //    Прескалер ADC на F401 — это ADCPRE в ADC->CCR (RM0368), а НЕ
-  //    RCC->CFGR (там он только у F1/F2). Сбросовое PCLK2/2 = 42 МГц
-  //    выше спецификации (<=36 МГц) → ставим /4 = 21 МГц. Ядро
-  //    STM32duino CCR не трогало, VBATE погашен в секции 4
-  //    disableUnusedPinsAndPeripherals().
-  __HAL_RCC_ADC1_CLK_ENABLE();
-  ADC->CCR = (ADC->CCR & ~ADC_CCR_ADCPRE) | ADC_CCR_ADCPRE_DIV4;
-  ADC->CCR |= ADC_CCR_TSVREFE;
-
-  // 2. Одиночный замер: 12 бит, последовательность из 1, канал 17,
-  //    сэмпл 480 циклов (внутренний источник высокоимпедансный).
-  ADC1->SR    = 0;                 // сброс застоявшихся EOC/OVR
-  ADC1->CR1   = 0;                 // RES = 00 → 12 бит
-  ADC1->CR2   = ADC_CR2_ADON;      // АЦП включён, без DMA/EOCS
-  ADC1->SMPR2 = (7U << 21);        // SMP17 = 111 → 480 цикла
-  ADC1->SQR1  = 0;                 // L = 0 → 1 преобразование
-  ADC1->SQR3  = 17U;               // SQ1 = IN17 (VREFINT)
-
-  // 3. Стабилизация и холостая конверсия. RM0368: первая конверсия после
-  //    подачи ADON может стартовать не раньше t_STAB (3 мкс), а VREFINT
-  //    после TSVREFE=1 ещё и набирает номинал десятки мкс. Прежняя версия
-  //    мерила сразу — ловила незрелый VREFINT (raw ~480 вместо ~1240 →
-  //    "10.28V" вместо ~4.0 В). delayMicroseconds — API ядра STM32duino.
-  delayMicroseconds(50);           // t_STAB + startup VREFINT, с запасом
-  ADC1->CR2 |= ADC_CR2_SWSTART;    // холостая конверсия: разгон АЦП
-  uint32_t guard = 100000;
-  while (!(ADC1->SR & ADC_SR_EOC)) {
-    if (--guard == 0) break;
-  }
-  (void)ADC1->DR;                  // холостой результат выбрасываем
-
-  // 4. Рабочий замер (нужно ~23 мкс, ждём до ~1 мс).
-  ADC1->CR2 |= ADC_CR2_SWSTART;
-  guard = 100000;
-  while (!(ADC1->SR & ADC_SR_EOC)) {
-    if (--guard == 0) break;
-  }
-  uint32_t raw = ADC1->DR;         // чтение DR снимает EOC
-  g_vddRaw = (uint16_t)raw;
-
-  // 5. Обратно всё гасим — инвариант STOP: перед сном АЦП обесточен.
-  ADC1->CR2 = 0;
-  ADC->CCR &= ~ADC_CCR_TSVREFE;
-  __HAL_RCC_ADC1_CLK_DISABLE();
-
-  if (guard == 0 || raw < 64) return 0;  // таймаут/мусор — рисовать нечего
-  uint32_t cal = *VREFINT_CAL_ADDR_F401; // заводской код при 3.0 В
-  g_vddCal = (uint16_t)cal;
-  return (uint16_t)(VDDA_CAL_MV * cal / raw + 0.5f);
-}
-
-// ============================================================
-//  Печать числа со знаком (минус — только для отрицательных)
-//  Используется для обеих строк экрана.
-// ============================================================
-void printTempSigned(float t) {
-  if (t < 0.0f) display.print('-');
-  // Абсолютное значение с одним знаком после запятой
-  display.print(fabsf(t), 1);
-}
-
-// ============================================================
-//  Отрисовка экрана
-// ============================================================
-void drawScreen() {
-  display.clearDisplay();
-
-  // --- Верхняя строка: текущая температура крупным шрифтом ---
-  // Размер 3 -> 18×24 px на символ. "-23.4" → 5 символов = 90 px.
-  display.setTextSize(3);
-  display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0, 4);
-  printTempSigned(currentTempC);
-
-  // Градус-метка "C" крупным шрифтом справа от значения
-  int16_t cx = display.getCursorX();
-  display.setCursor(cx + 2, 4);
-  display.print('C');
-
-  // --- Разделитель ---
-  display.drawFastHLine(0, 35, OLED_W, SSD1306_WHITE);
-
-  // --- Нижняя строка: "min − max" ---
-  display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0, 42);
-  printTempSigned(minTempC);
-  display.print(F(".."));
-  printTempSigned(maxTempC);
-
-  // --- Индикатор батареи: правый край той же строки ---
-  // Формат "X.XXV" = 5 символов × 6 px = 30 px → x = 128-30 = 98.
-  // Самый широкий диапазон ("−40.0 - 123.4") занимает <=78 px —
-  // пересечений с правым краем нет.
-  uint16_t vddMv = readVddMillivolts();
-  display.setCursor(OLED_W - 50, 42);
-  if (vddMv > 0) {
-    display.print(vddMv / 1000.0f, 2);
-    display.print('V');
-  } else {
-    display.print(F("--.-V"));
-  }
-
-  display.display();
 }
 
 // ============================================================
@@ -898,33 +318,6 @@ WakeSource detectWakeSource() {
   wokenByRTC    = false;
 
   return src;
-}
-
-// ============================================================
-//  Подготовка к STOP-режиму — полная оптимизация по AN4899
-//  и образцу sketch_apr8a.ino.
-//  Вызывается из enterSleep() только при USE_STOP_MODE = true.
-// ============================================================
-void prepareStopMode() {
-  // МИНИМАЛЬНАЯ ПОДГОТОВКА — только то, что безопасно и не ломает пробуждение.
-  // Ранее здесь было много кода, который отключал периферию и прерывания,
-  // но это приводило к проблемам: STOP не входил (slept=11ms), пробуждение
-  // по RTC/кнопке ломалось. Теперь делаем минимум.
-
-  // 1. Очищаем флаги пробуждения — чтобы не сработали мгновенно после входа.
-  EXTI->PR = 0xFFFFFFFF;
-  __HAL_PWR_CLEAR_FLAG(PWR_FLAG_WU);
-  NVIC_ClearPendingIRQ(RTC_WKUP_IRQn);
-  NVIC_ClearPendingIRQ(EXTI15_10_IRQn);
-
-  // 2. Конфигурируем PWR для STOP с LP-регулятором (LPDS=1).
-  // Это единственная настройка, которая реально снижает потребление
-  // и не мешает пробуждению. FPDS, отключение периферии, USB — убраны,
-  // т.к. они либо ломали пробуждение, либо не давали эффекта.
-  // HAL_PWR_EnterSTOPMode внутри LowPower.deepSleep() сам установит
-  // LPDS через MODIFY_REG, но дублируем для надёжности.
-  PWR->CR |=  PWR_CR_LPDS;
-  PWR->CR &= ~PWR_CR_PDDS;  // гарантия STOP, не Standby
 }
 
 // ============================================================
@@ -999,62 +392,6 @@ void wakeFromStop() {
 // ============================================================
 //  Переходы между состояниями
 // ============================================================
-void enterSleep() {
-  state = ST_SLEEP;
-  // ФАЗА 2: clearDisplay()+display() УБРАНЫ. Раньше перед каждым засыпанием
-  // гонялся полный I2C-кадр (1 КБ GDDRAM @ 100 кГц ≈ 95-100 мс при полном
-  // тактировании 84 МГц) при УЖЕ ВЫКЛЮЧЕННОМ дисплее — только чтобы
-  // «зачистить» память на будущее включение. В этом нет нужды: drawScreen()
-  // в ACTIVE каждый кадр начинается с clearDisplay() и полностью
-  // перерисовывает экран, так что первое же обновление (оно идёт немедленно,
-  // lastRefreshMs = 0) затирает прошлое состояние. Побочный эффект: первые
-  // ~100 мс после пробуждения видно «замороженное» прошлое состояние —
-  // естественное поведение просыпающегося устройства.
-  oledPowerOff();
-  if (LED_PIN >= 0) digitalWrite(LED_PIN, LED_OFF);
-  // ВАЖНО: после выхода из сна внутренние флаги EXTI для пина
-  // кнопки могут быть сброшены, поэтому перед каждым засыпанием
-  // нужно перерегистрировать прерывание пробуждения.
-  LowPower.attachInterruptWakeup(PIN_BUTTON, buttonWakeCallback, FALLING);
-  // Дождаться отправки буфера UART/USB-CDC — иначе последние
-  // строки лога могут «исчезнуть» вместе с переходом в сон.
-  //
-  // safeSerialFlush() с таймаутом БЕЗОПАСНА и в Sleep, и в STOP:
-  //   - В Sleep-режиме: USB-CDC работает, flush вытолкнёт все байты.
-  //   - В STOP-режиме: USB-CDC сейчас работает (после wakeFromStop),
-  //     flush вытолкнёт байты ПЕРЕД тем, как prepareStopMode погасит
-  //     USB-периферию. Если flush НЕ сделать — данные в TX-буфере
-  //     пропадут после перехода в STOP.
-  //
-  // НЕ безопасна только «сырая» Serial.flush() без таймаута — она
-  // может блокировать бесконечно, если USB-CDC нерабочая.
-  // safeSerialFlush ждёт не более 200 мс и возвращает управление.
-  safeSerialFlush(200);
-
-  // Если включён STOP-режим — дополнительная подготовка.
-  if (USE_STOP_MODE) {
-    prepareStopMode();
-  }
-
-  // ФИКС ЛОЖНОГО «wake: BUTTON» (гигиена флагов перед сном).
-  // Раньше volatile-флаги wokenByButton/wokenByRTC очищались
-  // ТОЛЬКО в detectWakeSource() — т.е. потреблялись в момент
-  // отчёта. Любой EXTI15-фронт во время активной фазы (дребезг
-  // кнопки на размыкании — см. waitForButtonRelease) оставлял
-  // wokenByButton=true на весь следующий сон, и пробуждение по
-  // RTC-таймеру (slept=15000!) ложно отчётывалось как BUTTON.
-  // Теперь флаги гасятся непосредственно перед засыпанием, под
-  // маской прерываний: классифицируются только фронты, случившиеся
-  // ВО ВРЕМЯ сна. prepareStopMode() выше уже сбросил EXTI->PR и
-  // NVIC-pending; здесь остаётся погасить сами volatile-флаги.
-  // Побочный эффект: нажатие в последние ~200 мс перед засыпанием
-  // (окно safeSerialFlush) будет подхвачено не текущим, а следующим
-  // пробуждением — классификация при этом останется честной.
-  noInterrupts();
-  wokenByButton = false;
-  wokenByRTC    = false;
-  interrupts();
-}
 void enterActive() {
   state         = ST_ACTIVE;
   activeStartMs = millis();
@@ -1070,6 +407,11 @@ void enterActive() {
   }
   drawScreen();
 }
+
+// Объявления функций из power.cpp
+extern void disableUnusedPinsAndPeripherals();
+extern void prepareStopMode();
+extern void serialOffForStop_export();
 
 // ============================================================
 //  Setup
@@ -1300,7 +642,7 @@ void loop() {
       // woke from STOP» в одну строку и пропажа строк между циклами.
       // Теперь flush выталкивает «sleep zZz...» в провод, а PA9/PA10
       // уходят в Analog — мост не подпитывается из батареи во время сна.
-      serialOffForStop();
+      serialOffForStop_export();
       LowPower.deepSleep(SLEEP_PERIOD_MS);
       uint32_t t_after = rtc.getEpoch();
       uint32_t slept = (t_after - t_before) * 1000UL;  // секунды → миллисекунды
@@ -1348,7 +690,7 @@ void loop() {
     // дублирующих строк больше нет, «wake: BUTTON» встречается в логе
     // ровно один раз на каждое нажатие.
     // Больше НЕ используем isButtonPressed() — она проверяет текущее
-    // состояние пина, а это ненадёжно (кнопка уже отпущена).
+    // состояние пина, а этоненадёжно (кнопка уже отпущена).
     if (lastWakeSource == WAKE_BUTTON) {
       waitForButtonRelease();
       enterActive();
@@ -1383,7 +725,7 @@ void loop() {
         // ФАЗА 2.1: и здесь UART гасим ДО сна (serialOffForStop: flush уже
         // пуст — «wake: RTC…» ушла в провод ещё до блика), а поднимаем
         // ПОСЛЕ — симметрично основному сну.
-        serialOffForStop();
+        serialOffForStop_export();
         prepareStopMode();
         LowPower.deepSleep(DS18B20_CONV_MS + CONV_GUARD_MS - LED_BLINK_MS);
         resumeSysTick();
