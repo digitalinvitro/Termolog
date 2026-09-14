@@ -35,14 +35,14 @@
 // ============================================================
 //  Временные константы
 // ============================================================
-static const uint32_t ACTIVE_DURATION_MS = 60000UL;   // 1 минута активного режима
-static const uint32_t ACTIVE_REFRESH_MS  = 5000UL;    // обновление экрана каждые 5 с
-static const uint32_t SLEEP_PERIOD_MS    = 15000UL;   // 15 с между замерами в SLEEP
+constexpr uint32_t ACTIVE_DURATION_MS = 60000UL;   // 1 минута активного режима
+constexpr uint32_t ACTIVE_REFRESH_MS  = 5000UL;    // обновление экрана каждые 5 с
+constexpr uint32_t SLEEP_PERIOD_MS    = 15000UL;   // 15 с между замерами в SLEEP
 
 // Флаг отладочного режима: если true — НЕ засыпать, а каждую секунду
 // печатать время RTC в терминал. Так можно убедиться, что RTC живёт.
 // После проверки переключите в false.
-static const bool DEBUG_RTC = false;
+constexpr bool DEBUG_RTC = false;
 
 // ============================================================
 //  Выбор режима сна.
@@ -90,17 +90,17 @@ static const bool DEBUG_RTC = false;
 #define NO_LOG
 
 // Антидребезг кнопки: сколько мс ждать стабилизации уровня
-static const uint16_t BUTTON_DEBOUNCE_MS = 50;
+constexpr uint16_t BUTTON_DEBOUNCE_MS = 50;
 // Таймаут ожидания отпускания кнопки (защита от зависания,
 // если пробуждение было ложным). После этого считаем, что кнопка не нажата.
-static const uint16_t BUTTON_PRESS_TIMEOUT_MS = 3000;
+constexpr uint16_t BUTTON_PRESS_TIMEOUT_MS = 3000;
 // Время преобразования DS18B20 при 12-бит: ~750 мс
-static const uint16_t DS18B20_CONV_MS = 750;
+constexpr uint16_t DS18B20_CONV_MS = 750;
 // ФАЗА 2 (энергопотребление вспышки SLEEP-цикла):
-static const uint16_t LED_BLINK_MS  = 50;   // длительность видимого LED-блика «замер идёт»
-static const uint16_t CONV_GUARD_MS = 100;  // запас к 750 мс: дрейф LSI (±1-3%) + субсекундная
-                                            // сетка RTC-будильника; чтение ПОЗЖЕ конца
-                                            // конверсии всегда безопасно (скретчпад готов)
+constexpr uint16_t LED_BLINK_MS  = 50;   // длительность видимого LED-блика «замер идёт»
+constexpr uint16_t CONV_GUARD_MS = 100;  // запас к 750 мс: дрейф LSI (±1-3%) + субсекундная
+                                         // сетка RTC-будильника; чтение ПОЗЖЕ конца
+                                         // конверсии всегда безопасно (скретчпад готов)
 
 // ============================================================
 //  Команды SSD1306 (не все определены в Adafruit_SSD1306.h)
