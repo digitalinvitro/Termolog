@@ -64,7 +64,7 @@
 //  (типичная причина — частичная замена файлов вручную).
 //  История версий и технических решений — в CHANGELOG.md.
 // ============================================================
-#define GLM_CONFIG_VERSION 20
+#define GLM_CONFIG_VERSION 21
 
 // ============================================================
 //  Библиотеки (через Менеджер библиотек Arduino IDE)
@@ -89,6 +89,7 @@
 constexpr auto PIN_DS18B20 = PB0;   // 1-Wire шина данных датчика DS18B20
 constexpr auto PIN_BUTTON  = PA15;  // Кнопка активности: внешний pull-up, активный LOW
 constexpr auto PIN_RESET   = PC11;  // Кнопка сброса диапазона: внешний pull-up, активный LOW
+constexpr auto PIN_SET     = PC10;  // Кнопка установки времени: внешний pull-up, активный LOW
 
 // Пины I2C для OLED (Black Pill F401)
 constexpr auto I2C_SDA     = PB7;   // линия SDA дисплея SSD1306
@@ -131,6 +132,22 @@ constexpr IRQn_Type buttonExtiIrqn(uint32_t line) {
   return static_cast<IRQn_Type>(EXTI0_IRQn + line); // линии 0..4 — свои векторы
 }
 constexpr IRQn_Type BUTTON_EXTI_IRQN = buttonExtiIrqn(BUTTON_EXTI_LINE);
+
+// ============================================================
+//  Кнопка установки времени (PC10) -> линия EXTI.
+//  Аналогично кнопке активности: номер линии = номер вывода,
+//  IRQ выбирается по диапазону. Используется в GLM.ino для
+//  обработки нажатий кнопки установки времени.
+// ============================================================
+constexpr uint32_t SET_EXTI_LINE =
+    static_cast<uint32_t>(PIN_SET) & 0xFu;       // PC10 -> линия 10
+
+constexpr IRQn_Type setExtiIrqn(uint32_t line) {
+  if (line >= 10u) return EXTI15_10_IRQn;         // линии 10..15
+  if (line >= 5u)  return EXTI9_5_IRQn;           // линии 5..9
+  return static_cast<IRQn_Type>(EXTI0_IRQn + line); // линии 0..4
+}
+constexpr IRQn_Type SET_EXTI_IRQN = setExtiIrqn(SET_EXTI_LINE);
 
 // ============================================================
 //  Параметры дисплея
@@ -291,6 +308,15 @@ constexpr uint8_t  JOURNAL_SAMPLES_PER_WORD = 4;     // образцов int8 в
 // от распознавания нажатия до отпускания; нажатия короче этого
 // порога переключают экраны (график).
 constexpr uint32_t JOURNAL_DUMP_HOLD_MS = 2000UL;
+// Удержание кнопки PC10 (PIN_SET) для входа в режим установки времени.
+// Длинное нажатие (≥ SET_TIME_HOLD_MS) входит в режим настройки RTC:
+// часы начинают мигать, короткое нажатие PC10 переключает поля
+// (Часы→Минуты→Год→Месяц→День), кнопка PA15 увеличивает значение.
+constexpr uint32_t SET_TIME_HOLD_MS = 2000UL;
+// Таймаут бездействия в режиме установки времени: если не было
+// нажатий кнопок в течение этого времени, режим выходит без
+// сохранения изменений.
+constexpr uint32_t SET_TIME_IDLE_TIMEOUT_MS = 10000UL;
 // Живость порта логирования проверяется каждые столько строк
 // дампа (journalDumpCsv). Хост, пропавший посреди выгрузки (выдернут
 // кабель, закрыт монитор), больше НЕ вызывает вечный блок в print():
@@ -530,6 +556,7 @@ extern int8_t tempRawC;             // последний сырой отсчё�
 // --- power.cpp ---
 extern volatile bool wokenByButton; // устанавливается в ISR кнопки PIN_BUTTON
 extern volatile bool wokenByRTC;    // устанавливается в ISR RTC Wakeup
+extern volatile bool wokenBySet;    // устанавливается в ISR кнопки PIN_SET (установка времени)
 extern uint16_t g_vddRaw;           // сырой код VREFINT последнего замера (диагностика)
 extern uint16_t g_vddCal;           // заводской калибровочный код VREFINT (диагностика)
 
@@ -559,6 +586,7 @@ void resumeSysTick();             // восстановление SysTick пос
 void wakeFromStop();              // восстановление периферии после STOP
 void buttonWakeCallback();        // ISR-callback: пробуждение кнопкой PIN_BUTTON
 void rtcWakeCallback(void *data); // ISR-callback: пробуждение RTC Wakeup Timer
+void setWakeCallback();           // ISR-callback: пробуждение кнопкой PIN_SET (установка времени)
 
 // --- termo.cpp: накопление и обработка температуры ---
 void initThermo();                 // настройка DS18B20 + первичное измерение (посев медианного фильтра)

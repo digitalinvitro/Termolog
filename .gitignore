@@ -2,16 +2,14 @@
 # Compiled and build artifacts
 *.o
 *.obj
-*.elf
-*.hex
 *.bin
+*.hex
+*.elf
 *.out
 
 # Dependencies
-.pio/
-.platformio/
 lib/
-src/
+deps/
 
 # Logs and temp files
 *.log
@@ -21,7 +19,7 @@ src/
 # Environment
 .env
 .env.local
-.env.*
+*.env.*
 
 # Editors
 .vscode/
@@ -33,4 +31,16 @@ src/
 build/
 dist/
 output/
+*.build/
+*.output/
+
+# Arduino/Git related
+.git/
+!.gitignore
+```
+
+Wait, let me reconsider the input more carefully. The only modified files are `GLM.ino` and `config.h`, which appear to be source code files for what looks like an Arduino/C++ project. There are no build artifacts, dependency directories, or temporary files in the change list.
+
+```
+
 ```

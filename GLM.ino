@@ -28,6 +28,12 @@
  *              При нажатии замыкается на GND (пин = LOW).
  *              Один контакт -> PC11, второй -> GND.
  *              Работает ТОЛЬКО в ACTIVE. Сбрасывает min/max к текущему T.
+ *   - Кнопка установки времени: Внешний pull-up к 3V3 (пин в покое = HIGH).
+ *              При нажатии замыкается на GND (пин = LOW).
+ *              Один контакт -> PC10, второй -> GND.
+ *              Длинное нажатие (≥2 с) в ACTIVE входит в режим настройки RTC:
+ *              часы мигают, PC10 переключает поля (Часы→Минуты→Год→Месяц→День),
+ *              PA15 увеличивает значение. Выход по таймауту бездействия (10 с).
  *   - Питание: Li-ion аккумулятор 3.7 В (заряженный 4.0-4.2 В) —
  *              НАПРЯМУЮ на шину питания (пин 3V3), МИМО встроенного
  *              LDO платы: LDO (LM1117) сам тянет ~3-3.5 мА утечки
@@ -215,6 +221,19 @@ enum ScreenMode : uint8_t {
 };
 ScreenMode screenMode = SCR_MAIN;
 
+// Режим установки времени RTC (кнопка PC10). В обычном режиме —
+// SET_TIME_IDLE; длинное нажатие PC10 переводит в SET_TIME_EDIT,
+// где можно изменить часы/минуты/дату.
+enum SetTimeMode : uint8_t {
+  SET_TIME_IDLE   = 0,  // обычный режим, установка времени не активна
+  SET_TIME_EDIT   = 1   // режим редактирования: выбрано поле, мигает значение
+};
+SetTimeMode setTimeMode = SET_TIME_IDLE;
+
+// Поле редактирования в режиме SET_TIME_EDIT: 0=Часы, 1=Минуты,
+// 2=Год, 3=Месяц, 4=День. Переключается коротким нажатием PC10.
+uint8_t setTimeField = 0;
+
 // Источник последнего пробуждения (тип WakeSource — в config.h;
 // значение вычисляется detectWakeSource() из power.cpp).
 WakeSource lastWakeSource = WAKE_UNKNOWN;
@@ -346,6 +365,7 @@ void enterSleep() {
   noInterrupts();
   wokenByButton = false;
   wokenByRTC    = false;
+  wokenBySet    = false;
   interrupts();
 }
 void enterActive() {
@@ -353,6 +373,8 @@ void enterActive() {
   activeStartMs = millis();
   lastRefreshMs = 0;          // форсировать немедленное обновление
   screenMode    = SCR_MAIN;   // пробуждение — всегда стандартный экран
+  setTimeMode   = SET_TIME_IDLE;  // выход из режима установки времени
+  setTimeField  = 0;          // сброс поля редактирования
   oledPowerOn();
   if (LED_PIN >= 0) digitalWrite(LED_PIN, LED_ON);
   // Явная первая отрисовка — иначе на экране может остаться
@@ -497,8 +519,10 @@ bool ensureLogPortForDump() {
     uint8_t secLeft = (uint8_t)((USB_ENUM_WAIT_MS - (millis() - t0) + 999UL) / 1000UL);
     if (secLeft != lastSec) {
       lastSec = secLeft;
-      dumpFrameStatus(secLeft >= 3 ? F("host? 3s")
-                    : (secLeft == 2 ? F("host? 2s") : F("host? 1s")));
+      // Динамическое формирование строки вместо хардкода "3s/2s/1s"
+      char buf[12];
+      snprintf(buf, sizeof(buf), "host? %us", secLeft);
+      dumpFrameStatus(String(buf));
     }
   }
   if (!Serial) {
@@ -693,6 +717,9 @@ void setup() {
   // detectWakeSource(), т.к. библиотека сама сбрасывает RTC->ISR.WUTF
   // во внутреннем обработчике до возврата из deepSleep().
   LowPower.enableWakeupFrom(&rtc, rtcWakeCallback);
+  // Пробуждение по спаду фронта на PC10 (кнопка установки времени -> GND).
+  // Callback установит wokenBySet=true в ISR.
+  LowPower.attachInterruptWakeup(PIN_SET, setWakeCallback, FALLING);
   bootStep(5, "Wake");
 
   // === Стартовый экран: итог загрузки + подсказки жестов ===
