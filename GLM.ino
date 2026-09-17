@@ -497,8 +497,10 @@ bool ensureLogPortForDump() {
     uint8_t secLeft = (uint8_t)((USB_ENUM_WAIT_MS - (millis() - t0) + 999UL) / 1000UL);
     if (secLeft != lastSec) {
       lastSec = secLeft;
-      dumpFrameStatus(secLeft >= 3 ? F("host? 3s")
-                    : (secLeft == 2 ? F("host? 2s") : F("host? 1s")));
+      // Динамическое формирование строки вместо хардкода "3s/2s/1s"
+      char buf[12];
+      snprintf(buf, sizeof(buf), "host? %us", secLeft);
+      dumpFrameStatus(String(buf));
     }
   }
   if (!Serial) {
