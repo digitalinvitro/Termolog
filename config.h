@@ -304,7 +304,7 @@ constexpr uint32_t JOURNAL_DUMP_ALIVE_EVERY = 64UL;
 //  = 15 мин), свежие образцы — у правого края.
 // ============================================================
 constexpr uint8_t GRAPH_TOP_Y    = 10;     // верх поля графика, px
-constexpr uint8_t GRAPH_BOTTOM_Y = 62;     // низ поля графика, px
+constexpr uint8_t GRAPH_BOTTOM_Y = 60;     // низ поля графика, px (запас 2px до оси времени)
 constexpr uint8_t GRAPH_MAX_PTS  = OLED_W; // максимум точек графика (128)
 
 // ============================================================
