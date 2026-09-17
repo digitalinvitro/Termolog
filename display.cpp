@@ -58,6 +58,14 @@ Adafruit_SSD1306 display(OLED_W, OLED_H, &Wire, OLED_RESET);
 //         через Wire.setSDA()/Wire.setSCL() ДО Wire.begin(),
 //         иначе I2C-периферия остаётся на пинах по умолчанию
 //         и экран молчит.
+//
+//  ОБРАБОТКА ОТСУТСТВИЯ OLED: если display.begin() не вернул true,
+//  функция пишет лог об ошибке и возвращает false. Вызывающий код
+//  (GLM.ino setup()) проверяет флаг bootOledOk и продолжает работу
+//  без дисплея: устройство работает в «слепом» режиме — измеряет
+//  температуру, ведёт журнал, уходит в сон по расписанию.
+//  Для индикации состояния без OLED используется светодиод LED_PIN
+//  (если есть): мигание при старте сигнализирует об ошибке OLED.
 // ============================================================
 bool initOLED() {
   Wire.setSDA(I2C_SDA);
@@ -134,7 +142,7 @@ void drawScreen() {
   // --- Разделитель ---
   display.drawFastHLine(0, 35, OLED_W, SSD1306_WHITE);
 
-  // --- Нижняя строка: "min..max" ---
+  // --- Нижняя строка: "min..max" + батарея + время RTC ---
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(0, 42);
@@ -156,14 +164,29 @@ void drawScreen() {
     display.print(F("--.-V"));
   }
 
+  // --- Время RTC: самая нижняя строка (y=54) ---
+  // Формат "HH:MM" слева, под диапазоном температур.
+  // Занимает 5 символов = 30 px, не пересекается с min..max (до 66 px).
+  {
+    STM32RTC& rtc = STM32RTC::getInstance();
+    uint8_t hh, mm, ss; uint32_t sub; STM32RTC::AM_PM ap;
+    rtc.getTime(&hh, &mm, &ss, &sub, &ap);
+    display.setCursor(0, 54);
+    if (hh < 10) display.print('0');
+    display.print(hh);
+    display.print(':');
+    if (mm < 10) display.print('0');
+    display.print(mm);
+  }
+
   // --- Строка состояния REJ: замороженное достоверное значение ---
   // Пока ворот отбрасывает сырые отсчёты, выход (currentTempC)
   // заморожен. Крупно показано то, что говорит датчик (с REJ),
   // здесь — во что в данный момент «верит» логгер: «hold X.X C».
-  // Размещение: под строкой min..max (y=42..50), y=54..62 < 64.
+  // Размещение: справа от времени RTC (y=54), чтобы не перекрывать.
   if (rej) {
     display.setTextSize(1);
-    display.setCursor(0, 54);
+    display.setCursor(36, 54);  // после "HH:MM " (30px + отступ)
     display.print(F("hold "));
     printTempSigned(currentTempC);
     display.print(F(" C"));

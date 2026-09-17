@@ -358,11 +358,13 @@ void enterActive() {
   // Явная первая отрисовка — иначе на экране может остаться
   // мусор от предыдущего состояния или просто чёрный кадр,
   // так как SSD1306 не всегда корректно восстанавливает GDDRAM
-  // после команды DISPLAYON.
+  // после команды DISPLAYON. Рисуем ТОЛЬКО если OLED инициализирован.
   if (readTemperature(currentTempC)) {
     updateStats(currentTempC);
   }
-  drawScreen();
+  if (bootOledOk) {
+    drawScreen();
+  }
 }
 
 // ============================================================
@@ -607,10 +609,27 @@ void setup() {
   // на экране идут отметки этапов загрузки (bootStep): зависание
   // при старте видно на экране. Экономия ~0.5 с выключенной панели
   // не стоит потери диагностики.
-  initOLED();
-  bootOledOk = true;
-  bootFrameStart();
-  bootStep(1, "OLED");
+  // Если OLED не найден (initOLED вернёт false), bootOledOk останется
+  // false — устройство продолжит работу в «слепом» режиме: измеряет,
+  // пишет журнал, спит по расписанию. Для индикации ошибки OLED
+  // используем светодиод LED_PIN (если есть): серия быстрых миганий.
+  if (initOLED()) {
+    bootOledOk = true;
+    bootFrameStart();
+    bootStep(1, "OLED");
+  } else {
+    // Ошибка OLED: мигаем светодиодом N раз (сигнал неисправности)
+    LOG_OBJECT.println(F("[Thermo] continuing without OLED"));
+    if (LED_PIN >= 0) {
+      for (uint8_t i = 0; i < 5; i++) {
+        digitalWrite(LED_PIN, LED_ON);
+        delay(100);
+        digitalWrite(LED_PIN, LED_OFF);
+        delay(100);
+      }
+    }
+    bootStep(1, "no OLED");  // отметка этапа без рисования на экране
+  }
 
   // Датчик температуры: настройка + первичное измерение (посев
   // медианного фильтра). Всё общение с датчиком — в termo.cpp:
@@ -787,11 +806,19 @@ void loop() {
       if (digitalRead(PIN_RESET) == LOW) {
         delay(BUTTON_DEBOUNCE_MS);
         if (digitalRead(PIN_RESET) == LOW) {
-          // Ждём отпускания кнопки сброса
+          // Ждём отпускания кнопки сброса с антидребезгом
           uint32_t t0 = millis();
           while (digitalRead(PIN_RESET) == LOW) {
             if (millis() - t0 > BUTTON_PRESS_TIMEOUT_MS) break;
             delay(10);
+          }
+          // Окно тишины для антидребезга на отпускании (аналогично кнопке активности)
+          uint32_t quietUntil = millis() + BUTTON_DEBOUNCE_MS;
+          while ((int32_t)(millis() - quietUntil) < 0) {
+            if (digitalRead(PIN_RESET) == LOW) {
+              quietUntil = millis() + BUTTON_DEBOUNCE_MS;
+            }
+            delay(2);
           }
           // Сбрасываем диапазон к текущей температуре
           resetStats();
@@ -803,16 +830,30 @@ void loop() {
       if (nextRefresh == 0 || millis() >= nextRefresh) {
         if (readTemperature(currentTempC)) {
           updateStats(currentTempC);
+          // Время RTC для лога ACTIVE-замера
+          STM32RTC& rtc = STM32RTC::getInstance();
+          uint8_t hh, mm, ss; uint32_t sub; STM32RTC::AM_PM ap;
+          rtc.getTime(&hh, &mm, &ss, &sub, &ap);
           LOG_OBJECT.print(F("[Thermo] T="));
           LOG_OBJECT.print(currentTempC * 0.5f, 1);
-          LOG_OBJECT.println(F(" C (active)"));
+          LOG_OBJECT.print(F(" C (active) @"));
+          if (hh < 10) LOG_OBJECT.print('0');
+          LOG_OBJECT.print(hh);
+          LOG_OBJECT.print(':');
+          if (mm < 10) LOG_OBJECT.print('0');
+          LOG_OBJECT.print(mm);
+          LOG_OBJECT.print(':');
+          if (ss < 10) LOG_OBJECT.print('0');
+          LOG_OBJECT.println(ss);
         }
         // Рисуем ТЕКУЩИЙ экран: конвейер замера общий,
-        // отличается только отрисовка.
-        if (screenMode == SCR_MAIN) {
-          drawScreen();
-        } else {
-          drawGraph();
+        // отличается только отрисовка. Рисуем ТОЛЬКО если OLED есть.
+        if (bootOledOk) {
+          if (screenMode == SCR_MAIN) {
+            drawScreen();
+          } else {
+            drawGraph();
+          }
         }
         nextRefresh = millis() + ACTIVE_REFRESH_MS;
       }
@@ -822,7 +863,7 @@ void loop() {
     }
 
     // Активное окно истекло — уходим в сон.
-    if (screenMode == SCR_GRAPH) {
+    if (screenMode == SCR_GRAPH && bootOledOk) {
       // После минуты бездействия на графике — стандартный кадр,
       // затем обычный путь в сон (кадр останется в GDDRAM на время
       // сна и первые ~200 мс следующего пробуждения — см. enterSleep).
@@ -862,17 +903,32 @@ void loop() {
       // UART (свежий LOG_BEGIN — самое надёжное место печати).
       // slept считается по целым секундам RTC (округление вниз):
       // нажатие через ~1 с печатается как 1000.
-      LOG_OBJECT.print(F("[Thermo] wake: "));
-      if (lastWakeSource == WAKE_BUTTON) {
-        LOG_OBJECT.print(F("BUTTON"));
-      } else if (lastWakeSource == WAKE_RTC) {
-        LOG_OBJECT.print(F("RTC"));
-      } else {
-        LOG_OBJECT.print(F("UNKNOWN"));
+      // Время RTC добавляется для синхронизации с терминалом.
+      {
+        STM32RTC& rtc = STM32RTC::getInstance();
+        uint8_t hh, mm, ss; uint32_t sub; STM32RTC::AM_PM ap;
+        rtc.getTime(&hh, &mm, &ss, &sub, &ap);
+        LOG_OBJECT.print(F("[Thermo] wake: "));
+        if (lastWakeSource == WAKE_BUTTON) {
+          LOG_OBJECT.print(F("BUTTON"));
+        } else if (lastWakeSource == WAKE_RTC) {
+          LOG_OBJECT.print(F("RTC"));
+        } else {
+          LOG_OBJECT.print(F("UNKNOWN"));
+        }
+        LOG_OBJECT.print(F(" @"));
+        if (hh < 10) LOG_OBJECT.print('0');
+        LOG_OBJECT.print(hh);
+        LOG_OBJECT.print(':');
+        if (mm < 10) LOG_OBJECT.print('0');
+        LOG_OBJECT.print(mm);
+        LOG_OBJECT.print(':');
+        if (ss < 10) LOG_OBJECT.print('0');
+        LOG_OBJECT.print(ss);
+        LOG_OBJECT.print(F(" (slept="));
+        LOG_OBJECT.print(slept);
+        LOG_OBJECT.println(F(" ms)"));
       }
-      LOG_OBJECT.print(F(" (slept="));
-      LOG_OBJECT.print(slept);
-      LOG_OBJECT.println(F(" ms)"));
     } else {
       // === Sleep-режим ===
       // Безопасный flush с таймаутом: Serial.flush() блокирует навсегда,

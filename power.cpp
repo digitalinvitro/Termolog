@@ -271,13 +271,16 @@ void disableUnusedPinsAndPeripherals() {
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   // --- 3. Неиспользуемые пины порт C: PC0-PC10, PC12, PC14, PC15 ---
-  // PC11 (кнопка сброса), PC13 (LED) — не трогаем.
+  // PC13 (LED) — не трогаем.
   // PC14/PC15 (LSE) — если кварц не распаян, переводим в Analog.
   // Если кварц есть — закомментируйте PC14/PC15 ниже!
+  // PC11 (кнопка сброса) — паркуем в Analog: внешний pull-up держит HIGH,
+  // но входной буфер Шмитта на floating-пине может осциллировать (AN4899).
+  // В STOP кнопка не используется — парковка безопасна.
   GPIO_InitStruct.Pin = GPIO_PIN_0  | GPIO_PIN_1  | GPIO_PIN_2  | GPIO_PIN_3  |
                         GPIO_PIN_4  | GPIO_PIN_5  | GPIO_PIN_6  | GPIO_PIN_7  |
-                        GPIO_PIN_8  | GPIO_PIN_9  | GPIO_PIN_10 | GPIO_PIN_12 |
-                        GPIO_PIN_14 | GPIO_PIN_15;
+                        GPIO_PIN_8  | GPIO_PIN_9  | GPIO_PIN_10 | GPIO_PIN_11 |
+                        GPIO_PIN_12 | GPIO_PIN_14 | GPIO_PIN_15;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
   // --- 3b. Порт D: на F401RBT6 выведен только PD2 (LQFP64) ---
@@ -362,6 +365,12 @@ void prepareStopMode() {
   // 1. Очищаем флаги пробуждения — чтобы не сработали мгновенно после входа.
   EXTI->PR = 0xFFFFFFFF;                  // latched-флаги всех линий (RTC EXTI17 + кнопка)
   __HAL_PWR_CLEAR_FLAG(PWR_FLAG_WU);
+  // Явно очищаем флаг RTC wakeup (WUTF) в RTC_ISR — это отдельный флаг,
+  // который не сбрасывается через EXTI->PR. Без явной очистки следующее
+  // пробуждение может сработать мгновенно (RM0368 §6.3.6).
+  if (RTC->ISR & RTC_ISR_WUTF) {
+    RTC->ISR &= ~RTC_ISR_WUTF;
+  }
   NVIC_ClearPendingIRQ(RTC_WKUP_IRQn);
   NVIC_ClearPendingIRQ(BUTTON_EXTI_IRQN); // IRQ EXTI-линии кнопки (config.h)
 
@@ -515,6 +524,10 @@ void oledPowerOn() {
 //  ВНИМАНИЕ к точности: спецификация VREFINT дана при VDDA 2.4–3.6 В,
 //  а у нас 4.0–4.2 В (вся плата вне abs max — осознанное решение).
 //  Показание годится как индикатор батареи, не как вольтметр.
+//  См. datasheet STM32F401 §5.3.1 (supply voltage range) и §5.3.13
+//  (absolute maximum ratings): VDD/VDDA = -0.3 to +4.0 В; работа при
+//  4.0-4.2 В — за пределами спецификации, требует внешнего LDO или
+//  защиты от перенапряжения для долгосрочной надёжности.
 //
 //  Энергогигиена: функция самодостаточна —
 //  поднимает клок ADC1 + TSVREFE на время замера (~100 мкс) и ГАСИТ их

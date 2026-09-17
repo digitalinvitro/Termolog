@@ -244,7 +244,23 @@ TemperaturePipeline::Verdict TemperaturePipeline::gate(int8_t raw) {
     int8_t oldRef = gateRef;
     gateRef  = raw;               // новый эталон
     rejCount = 0;                 // серия закрыта
-    LOG_OBJECT.print(F("[Thermo] RELOCK ref="));
+    
+    // Время RTC для события RELOCK
+    uint32_t epoch = nowEpoch();
+    uint32_t hh = (epoch / 3600) % 24;
+    uint32_t mm = (epoch / 60) % 60;
+    uint32_t ss = epoch % 60;
+    
+    LOG_OBJECT.print(F("[Thermo] RELOCK @"));
+    if (hh < 10) LOG_OBJECT.print('0');
+    LOG_OBJECT.print(hh);
+    LOG_OBJECT.print(':');
+    if (mm < 10) LOG_OBJECT.print('0');
+    LOG_OBJECT.print(mm);
+    LOG_OBJECT.print(':');
+    if (ss < 10) LOG_OBJECT.print('0');
+    LOG_OBJECT.print(ss);
+    LOG_OBJECT.print(F(" ref="));
     LOG_OBJECT.print(oldRef * 0.5f, 1);
     LOG_OBJECT.print(F(" -> "));
     LOG_OBJECT.print(raw * 0.5f, 1);
@@ -258,7 +274,22 @@ TemperaturePipeline::Verdict TemperaturePipeline::gate(int8_t raw) {
 // При NO_LOG все вызовы — no-op: батарейный режим за отладку
 // не платит ни временем, ни током.
 void TemperaturePipeline::logRawSample(int8_t raw, Verdict v) const {
-  LOG_OBJECT.print(F("[Thermo] raw T="));
+  // Время RTC для лога
+  uint32_t epoch = nowEpoch();
+  uint32_t hh = (epoch / 3600) % 24;
+  uint32_t mm = (epoch / 60) % 60;
+  uint32_t ss = epoch % 60;
+  
+  LOG_OBJECT.print(F("[Thermo] @"));
+  if (hh < 10) LOG_OBJECT.print('0');
+  LOG_OBJECT.print(hh);
+  LOG_OBJECT.print(':');
+  if (mm < 10) LOG_OBJECT.print('0');
+  LOG_OBJECT.print(mm);
+  LOG_OBJECT.print(':');
+  if (ss < 10) LOG_OBJECT.print('0');
+  LOG_OBJECT.print(ss);
+  LOG_OBJECT.print(F(" raw T="));
   LOG_OBJECT.print(raw * 0.5f, 1);
   if (v == ACCEPT) {
     LOG_OBJECT.println(F(" gate=OK"));
@@ -352,7 +383,23 @@ void initThermo() {
     tempRawC     = raw;         // сырое значение — и на экран
     tempRejected = false;       // отбрасываний ещё не было (нет REJ)
     updateStats(raw);           // первичное измерение инициализирует min/max
-    LOG_OBJECT.print(F("[Thermo] seed T = "));
+    
+    // Время RTC для лога посева
+    uint32_t epoch = nowEpoch();
+    uint32_t hh = (epoch / 3600) % 24;
+    uint32_t mm = (epoch / 60) % 60;
+    uint32_t ss = epoch % 60;
+    
+    LOG_OBJECT.print(F("[Thermo] @"));
+    if (hh < 10) LOG_OBJECT.print('0');
+    LOG_OBJECT.print(hh);
+    LOG_OBJECT.print(':');
+    if (mm < 10) LOG_OBJECT.print('0');
+    LOG_OBJECT.print(mm);
+    LOG_OBJECT.print(':');
+    if (ss < 10) LOG_OBJECT.print('0');
+    LOG_OBJECT.print(ss);
+    LOG_OBJECT.print(F(" seed T = "));
     LOG_OBJECT.print(raw * 0.5f, 1);
     LOG_OBJECT.println(F(" C"));
   } else {
@@ -437,7 +484,23 @@ void resetStats() {
   maxTempC = currentTempC;
   pendMinN = 0;
   pendMaxN = 0;
-  LOG_OBJECT.println(F("[Thermo] stats RESET by user"));
+  
+  // Время RTC для лога сброса
+  uint32_t epoch = nowEpoch();
+  uint32_t hh = (epoch / 3600) % 24;
+  uint32_t mm = (epoch / 60) % 60;
+  uint32_t ss = epoch % 60;
+  
+  LOG_OBJECT.print(F("[Thermo] @"));
+  if (hh < 10) LOG_OBJECT.print('0');
+  LOG_OBJECT.print(hh);
+  LOG_OBJECT.print(':');
+  if (mm < 10) LOG_OBJECT.print('0');
+  LOG_OBJECT.print(mm);
+  LOG_OBJECT.print(':');
+  if (ss < 10) LOG_OBJECT.print('0');
+  LOG_OBJECT.print(ss);
+  LOG_OBJECT.println(F(" stats RESET by user"));
 }
 
 // ============================================================
@@ -459,13 +522,28 @@ void readAndLogSleepTemp() {
     currentTempC = t;
     updateStats(t);
     journalOnSample(nowEpoch(), t);   // выход конвейера — в журнал
+    
+    // Время RTC для лога: форматирование HH:MM:SS
+    uint32_t epoch = nowEpoch();
+    uint32_t hh = (epoch / 3600) % 24;
+    uint32_t mm = (epoch / 60) % 60;
+    uint32_t ss = epoch % 60;
+    
     LOG_OBJECT.print(F("[Thermo] wake: TIMER  T="));
     LOG_OBJECT.print(currentTempC * 0.5f, 1);
     LOG_OBJECT.print(F("  range=["));
     LOG_OBJECT.print(minTempC * 0.5f, 1);
     LOG_OBJECT.print(F(" .. "));
     LOG_OBJECT.print(maxTempC * 0.5f, 1);
-    LOG_OBJECT.println(F("]"));
+    LOG_OBJECT.print(F("]  @"));
+    if (hh < 10) LOG_OBJECT.print('0');
+    LOG_OBJECT.print(hh);
+    LOG_OBJECT.print(':');
+    if (mm < 10) LOG_OBJECT.print('0');
+    LOG_OBJECT.print(mm);
+    LOG_OBJECT.print(':');
+    if (ss < 10) LOG_OBJECT.print('0');
+    LOG_OBJECT.println(ss);
     safeSerialFlush(100);
   } else {
     LOG_OBJECT.println(F("[Thermo] wake: TIMER  DS18B20 error"));
